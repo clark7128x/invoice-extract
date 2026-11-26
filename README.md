@@ -1,13 +1,13 @@
 # invoice-extract
 
-Витяг структурованих даних з текстів українських рахунків через LLM: JSON за схемою pydantic, повтор із текстом помилки валідації та порівняння двох моделей на синтетичному наборі.
-
-Пайплайн отримує текст рахунку й повертає постачальника, номер, дату, валюту, суму, ПДВ і список позицій. Відповідь моделі проходить валідацію. Якщо вона не пройшла, модель отримує список помилок із шляхами полів (наприклад `items.0.quantity`) і виправляє JSON. Повторів не більше двох.
-
-Окрема увага до відсутніх даних: коли ПДВ у рахунку немає, поле має бути `null`, а не вигаданим числом. Вигадані значення рахуються як окрема метрика.
-
-## Схема
-
+LLM extraction of structured data from Ukrainian invoice texts: JSON validated by a pydantic schema, retries that feed validation errors back to the model, and a comparison of two models on a synthetic set.
+ 
+The pipeline takes the text of an invoice and returns the supplier, number, date, currency, total, VAT and a list of line items. The model's reply goes through validation. If it fails, the model receives the list of errors with field paths (for example `items.0.quantity`) and corrects its JSON. At most two retries.
+ 
+Missing data gets special attention: when an invoice has no VAT, the field must be `null`, not an invented number. Invented values are counted as a separate metric.
+ 
+## Schema
+ 
 ```json
 {
   "supplier": "ТОВ «Крига Софт»",
@@ -19,91 +19,90 @@
   "items": [{"name": "Технічна підтримка", "quantity": 2.0, "unit_price": 500.0}]
 }
 ```
-
-Валідатори нормалізують значення до того, як схема їх перевірить. «10 травня 2024 року» стає `2024-05-10`, «1 200,00 грн» стає `1200.0`, «грн» і «₴» стають `UAH`, а «Без ПДВ» або «н/д» у полі `vat` стає `null`. Значення, яке не вдалося розпізнати, іде в повтор разом з поясненням.
-
-## Швидкий старт без ключів
-
-Потрібен Python 3.11 або новіший.
-
+ 
+Validators normalize values before the schema checks them. "10 травня 2024 року" becomes `2024-05-10`, "1 200,00 грн" becomes `1200.0`, "грн" and "₴" become `UAH`, and "Без ПДВ" or "н/д" in the `vat` field becomes `null`. A value that cannot be recognized goes to a retry together with an explanation.
+ 
+## Quick start without keys
+ 
+Requires Python 3.11 or newer.
+ 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 python generate_data.py
 pytest -q
 ```
-
-`generate_data.py` створить `data/invoices.jsonl`: 150 рахунків із фіксованим seed.
-
-## Запуск з моделлю
-
-Клієнт працює з будь-яким OpenAI-сумісним `/chat/completions`, зокрема з локальним сервером. Назви моделей не задані за замовчуванням.
-
+ 
+`generate_data.py` creates `data/invoices.jsonl`: 150 invoices with a fixed seed.
+ 
+## Running with a model
+ 
+The client works with any OpenAI-compatible `/chat/completions` endpoint, including a local server. There are no default model names.
+ 
 ```bash
 cp .env.example .env
-# впиши LLM_API_BASE, LLM_API_KEY, LLM_MODEL_SMALL, LLM_MODEL_LARGE
-set -a; source .env; set +a   # .env не читається автоматично
-
-python extract.py invoice.txt --model small   # один рахунок з файлу
-cat invoice.txt | python extract.py           # або зі stdin
-
-python eval.py                                # обидві моделі на всьому наборі
+# set LLM_API_BASE, LLM_API_KEY, LLM_MODEL_SMALL, LLM_MODEL_LARGE
+set -a; source .env; set +a   # .env is not loaded automatically
+ 
+python extract.py invoice.txt --model small   # one invoice from a file
+cat invoice.txt | python extract.py           # or from stdin
+ 
+python eval.py                                # both models on the whole set
 python eval.py --models small --limit 20
 ```
-
-Без налаштованих моделей `eval.py` не падає: у звіті для них стоїть «не виміряно» з причиною.
-
-## Дані
-
-Набір синтетичний, і це вплинуло на дизайн оцінки. Спершу генерується правильний JSON, потім із нього рендериться текст. Тому розмітка точна за побудовою, без ручної роботи й без розбіжностей між розмітниками.
-
-Текст створюється у п'яти шаблонах: різні формати дат і сум, таблиці й вільний виклад, шумові рядки (IBAN, телефон, «Переслане повідомлення») та опечатки в літерних словах. Числа, дати й номери не спотворюються. Частина рахунків без ПДВ, їхня частка задається в `config.yaml`.
-
-Синтетика дає чесне порівняння двох моделей на однакових вхідних даних. Вона не показує, як система поведеться на сканах, PDF і реальних шаблонах постачальників.
-
-## Оцінка
-
-`eval.py` проганяє кожну модель із `eval.models` і рахує:
-
-- F1 по кожному полю та окремо по полях позицій (`items.name`, `items.quantity`, `items.unit_price`);
-- частку відповідей, що пройшли валідацію з першої спроби та після повторів;
-- частку вигаданих значень у полях, яких у документі немає;
-- вартість за 1000 документів з урахуванням повторів;
-- медіану й p95 затримки на документ.
-
-Назви порівнюються з допуском в одну редакторську відстань, бо генератор вставляє односимвольні опечатки. Номер і дата порівнюються строго, суми з допуском 0.01. Позиції зіставляються без урахування порядку. Якщо валідація не пройшла після всіх спроб, усі поля документа зараховуються як пропущені, а документ не виключається з вибірки.
-
-Результат лягає в `results/metrics.md`, `results/eval_<час>.json` і `results/details_<час>.jsonl`. Кожен виклик моделі логується в `results/calls.jsonl` з токенами, часом, `doc_id` і номером спроби.
-
-**Чисел поки немає.** Прогону з реальною моделлю ще не було. Вартість з'явиться лише після того, як у `config.yaml` вписано `price_per_1m_input` і `price_per_1m_output`.
-
-## Конфігурація
-
-Параметри лежать у `config.yaml`: розмір і сид набору, ймовірність відсутнього ПДВ і опечаток, таймаути, повтори, допуски порівняння. Змінні середовища перекривають файл:
-
-| Змінна | Призначення |
+ 
+If no models are configured, `eval.py` does not crash: the report shows "not measured" for them, with the reason.
+ 
+## Data
+ 
+The set is synthetic, and that shaped the design of the evaluation. A correct JSON is generated first, and the text is rendered from it. The labels are therefore exact, with no manual work and no disagreement between annotators.
+ 
+The text is rendered in five templates: different date and amount formats, tables and free prose, noise lines (IBAN, phone, "Forwarded message") and typos in alphabetic words. Numbers, dates and invoice numbers are never distorted. Some invoices have no VAT; their share is set in `config.yaml`.
+ 
+Synthetic data gives a fair comparison of two models on identical input. It does not show how the system behaves on scans, PDFs and real supplier templates.
+ 
+## Evaluation
+ 
+`eval.py` runs every model in `eval.models` and computes:
+ 
+- F1 per field, and separately per line-item field (`items.name`, `items.quantity`, `items.unit_price`);
+- the share of replies that passed validation on the first attempt and after retries;
+- the share of invented values in fields that are absent from the document;
+- cost per 1000 documents, retries included;
+- median and p95 latency per document.
+Names are compared with a tolerance of one edit, because the generator inserts single-character typos. Invoice number and date are compared strictly, amounts with a tolerance of 0.01. Line items are matched regardless of order. If validation fails after all attempts, every field of that document counts as missed, and the document stays in the sample.
+ 
+Results go to `results/metrics.md`, `results/eval_<time>.json` and `results/details_<time>.jsonl`. Every model call is logged to `results/calls.jsonl` with tokens, time, `doc_id` and attempt number.
+ 
+**There are no numbers yet.** The pipeline has not been run with a real model. Cost appears only after `price_per_1m_input` and `price_per_1m_output` are set in `config.yaml`.
+ 
+## Configuration
+ 
+Parameters live in `config.yaml`: set size and seed, probability of missing VAT and of typos, timeouts, retries, comparison tolerances. Environment variables override the file:
+ 
+| Variable | Purpose |
 |---|---|
-| `LLM_API_BASE`, `LLM_API_KEY` | Провайдер LLM |
-| `LLM_MODEL_SMALL`, `LLM_MODEL_LARGE` | Назви малої й великої моделі |
-| `INV_CONFIG` | Шлях до іншого конфігу |
-
-Опція `json_mode` в конфігу моделі вмикає `response_format: json_object` для провайдерів, які його підтримують.
-
-## Структура
-
+| `LLM_API_BASE`, `LLM_API_KEY` | LLM provider |
+| `LLM_MODEL_SMALL`, `LLM_MODEL_LARGE` | Names of the small and large model |
+| `INV_CONFIG` | Path to another config file |
+ 
+The `json_mode` option in a model's config enables `response_format: json_object` for providers that support it.
+ 
+## Layout
+ 
 ```
-generate_data.py   синтетичний набір: gold-JSON і текст рахунку
-extract.py         один рахунок: файл або stdin, вивід JSON
-eval.py            метрики для двох моделей
-invoices/          схема, нормалізація, пайплайн, клієнт LLM, метрики, звіт
-tests/             168 тестів, моделі й мережа не потрібні
-docs/DESIGN.md     рішення, відкинуті альтернативи, відомі режими відмови
+generate_data.py   synthetic set: gold JSON and invoice text
+extract.py         one invoice: file or stdin, JSON output
+eval.py            metrics for two models
+invoices/          schema, normalization, pipeline, LLM client, metrics, report
+tests/             168 tests, no models or network required
+docs/DESIGN.md     decisions, rejected alternatives, known failure modes (in Ukrainian)
 ```
-
-## Відомі обмеження
-
-- Одиночна кома й одиночна крапка в сумі читаються як десяткові: «1,234» дає 1.234, а не 1234.
-- Метрика вигаданих значень охоплює лише ПДВ, бо тільки це поле генератор уміє приховувати.
-- `vat = 0` і `vat = null` різні стани: модель, що повертає 0 замість `null`, отримує штраф.
-- Жадібне зіставлення позицій може сплутати дві схожі назви в межах допуску.
-- У шаблонах немає OCR-шуму, переносів таблиць між сторінками й змішаних мов у назвах.
+ 
+## Known limitations
+ 
+- A single comma and a single dot in an amount are both read as decimal separators: "1,234" gives 1.234, not 1234.
+- The invented-value metric covers only VAT, because that is the only field the generator can hide.
+- `vat = 0` and `vat = null` are different states: a model that returns 0 instead of `null` is penalized.
+- Greedy line-item matching can confuse two similar names that are within the tolerance.
+- The templates contain no OCR noise, no tables split across pages and no mixed languages in item names.
