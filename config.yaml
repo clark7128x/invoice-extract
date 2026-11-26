@@ -1,0 +1,41 @@
+data:
+  out: data/invoices.jsonl
+  count: 150
+  seed: 17
+  vat_absent_probability: 0.35
+  typo_probability: 0.06
+
+llm:
+  base_url: ""              # перекривається LLM_API_BASE
+  timeout_s: 60
+  max_retries: 3            # повтори мережевих помилок, окремо від повторів валідації
+  retry_base_delay_s: 1.0
+  retry_max_delay_s: 20.0
+
+models:
+  small:
+    model: null             # перекривається LLM_MODEL_SMALL
+    temperature: 0.0
+    max_output_tokens: 1200
+    json_mode: false
+    price_per_1m_input: null
+    price_per_1m_output: null
+  large:
+    model: null             # перекривається LLM_MODEL_LARGE
+    temperature: 0.0
+    max_output_tokens: 2000
+    json_mode: false
+    price_per_1m_input: null
+    price_per_1m_output: null
+
+pipeline:
+  max_retries: 2            # повтори після помилки валідації
+  max_input_chars: 8000
+
+eval:
+  dataset: data/invoices.jsonl
+  models: [small, large]
+  results_dir: results
+  call_log: results/calls.jsonl
+  amount_tolerance: 0.01
+  name_edit_distance: 1
